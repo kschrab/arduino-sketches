@@ -42,8 +42,8 @@ TinyXML xml;
 uint8_t buffer[150];
 uint16_t buflen = 150;
 
-boolean readBlocked = true;
-boolean writeBlocked = true;
+boolean readFinished = true;
+boolean requestFinished = true;
 
 //some helper vars
 long lastCall;
@@ -79,7 +79,7 @@ void setup() {
   buildTagIndex = -1;
   lastCall = 0;
   connectAttempt = false;
-  readBlocked = true;
+  readFinished = true;
   
   
   client = EthernetClient();
@@ -113,7 +113,7 @@ void loop() {
     LED.sync();
   }
   //if all request have been fired, stop client and return. request again if call interval has been reached
-  if(buildIndex == 0 && writeBlocked && readBlocked && lastCall > 0 && millis() < lastCall + CALL_INTERVALL * 1000 ) {
+  if(buildIndex == 0 && requestFinished && readFinished && lastCall > 0 && millis() < lastCall + CALL_INTERVALL * 1000 ) {
     if(client.connected()) { //drop the client since the server does not keep the connection alive forever
       Serial.println("Disconnecting");
       client.stop(); 
@@ -123,21 +123,21 @@ void loop() {
   }
   
   //connect to client, if disconnected
-  if(readBlocked && !client.connected() && !connectAttempt) {
+  if(readFinished && !client.connected() && !connectAttempt) {
     Serial.println("Connecting");
     client = EthernetClient();
     client.connect(server, port);
     connectAttempt = true;
-    readBlocked = true;
-    writeBlocked = true;
+    readFinished = true;
+    requestFinished = true;
   }
   
-  if(writeBlocked && readBlocked) {
-    writeBlocked = false;
+  if(requestFinished && readFinished) {
+    requestFinished = false;
   }
   
   //send request to server, if writing is allowed;
-  if(!writeBlocked && client.connected()){
+  if(!requestFinished && client.connected()){
     connectAttempt = false;
     
     if(buildIndex == 0) {
@@ -164,11 +164,11 @@ void loop() {
     
     lastCharMillis = millis();
     
-    readBlocked = false;  
-    writeBlocked = true;
+    readFinished = false;  
+    requestFinished = true;
   }  
   //read one char if there's is one available, and process it with XML-parser
-  if(!readBlocked && client.available()) {
+  if(!readFinished && client.available()) {
     c = client.read();
 //    Serial.print(c);
     lastCharMillis = millis();
@@ -189,13 +189,13 @@ void loop() {
   }
   
   //handle timeouts
-  if(!readBlocked && client.connected() && millis() - lastCharMillis > 2000) {
+  if(!readFinished && client.connected() && millis() - lastCharMillis > 2000) {
      Serial.println("Timeout");
-     readBlocked = true; 
+     readFinished = true; 
   }
   
   //read finished: determine build-status (will be used later for LEDs) and increment buildIndex/branchIndex
-  if(writeBlocked && readBlocked) {
+  if(requestFinished && readFinished) {
     if(++buildIndex >= NUM_OF_BUILDS_PER_BRANCH) { //all builds of the branch have been read -> update status
 
              
@@ -234,7 +234,7 @@ void XML_callback( uint8_t statusflags, char* tagName,  uint16_t tagNameLen,  ch
     //end tag
     if(strcmp(tagName, "/builds") == 0) {
       Serial.println("success");
-      readBlocked = true; //stop reading
+      readFinished = true; //stop reading
     }
   } else if  (statusflags & STATUS_TAG_TEXT) {
     //end tag, nop
@@ -246,7 +246,7 @@ void XML_callback( uint8_t statusflags, char* tagName,  uint16_t tagNameLen,  ch
     }
   } else if  (statusflags & STATUS_ERROR) {
     Serial.println("failed");
-    readBlocked = true; //stop reading
+    readFinished = true; //stop reading
   }
 }
 
