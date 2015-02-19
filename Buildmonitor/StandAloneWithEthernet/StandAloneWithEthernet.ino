@@ -5,25 +5,35 @@
 #include <TinyXML.h>
 #include <WS2812.h>
 
-#define PIN                      6
-#define NUMPIXELS                1
+#define PIN                      6 //DATA pin of the WS2812 LED
+#define NUMPIXELS                1 //Number of LED RGBs connected
 
-#define NUM_OF_BUILDS_PER_BRANCH 2 
-#define CALL_INTERVALL           30  
+#define NUM_OF_BRANCHES          1 //Number of branches to show (should be the same as number of LEDs) (workaround: sizeof(builds) does not work properly)
+#define NUM_OF_BUILDS_PER_BRANCH 2 //Number of builds to watch per branch 
+#define CALL_INTERVALL           20 //Interval in seconds until the build status is requested again
 
-String builds[][NUM_OF_BUILDS_PER_BRANCH]  = { 
-    {
-        "branch1_build1", //RENAME THOSE TO YOUR BUILD-TYPE-IDS
-        "branch1_build1"
+String builds[NUM_OF_BRANCHES][NUM_OF_BUILDS_PER_BRANCH]  = { //collection of buildTypeIds for branches and their builds
+    {//branch 0
+      "branch0_build0",
+      "branch0_build1"
     }
   };
 
-byte mac[] = { xx,xx,xx,xx,xx,xx }; //mac adress of ethernet shield
+byte mac[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }; //mac adress of the ethernet shield (should be printed on the shield)
 
-IPAddress server(x,x,x,x);// IP addr of buildserver
+IPAddress server(0,0,0,0); // IP addr of teamcity server (we don't want to use DNS)
+int port = 8080; //port of teamcity server
+String host = ""; //hostname of teamcity server, only used in HTTP request header
+
+String auth = ""; //http auth: base 64 of "<username>:<password>"
+
+/*--------------*/
+
+boolean running[NUM_OF_BRANCHES];
+boolean success[NUM_OF_BRANCHES]; 
+int branchStatus[NUM_OF_BRANCHES];
+
 EthernetClient client;
-
-String auth = ""; //http base 64 auth
 
 WS2812 LED(NUMPIXELS);
 cRGB value;
@@ -32,23 +42,20 @@ TinyXML xml;
 uint8_t buffer[150];
 uint16_t buflen = 150;
 
-boolean running[sizeof(builds)];
-boolean success[sizeof(builds)]; 
-int buildStatus[sizeof(builds)];
-
 boolean readBlocked = true;
 boolean writeBlocked = true;
 
 //some helper vars
 long lastCall;
 long lastCharMillis;
-int callIndex;
 int buildIndex;
+int branchIndex;
 char c;
 boolean xmlProcessing;
 boolean xmlBegin;
 int buildTagIndex = 0;
 double mul;
+boolean connectAttempt;
 
 void setup() {  
   
@@ -65,81 +72,105 @@ void setup() {
   xml.init((uint8_t*)&buffer,buflen,&XML_callback);
   
   //init helper vars
-  callIndex = 0;
   buildIndex = 0;
+  branchIndex = 0;
   xmlProcessing = false;
   xmlBegin = false;
   buildTagIndex = -1;
   lastCall = 0;
+  connectAttempt = false;
+  readBlocked = true;
+  
+  
+  client = EthernetClient();
   
   delay(1000); //wait
+  
+  for(int i=0;i<NUM_OF_BRANCHES;i++) {
+     running[i] = false;
+     success[i] = false;
+     branchStatus[i] = 0;
+  } 
 }
 
 void loop() {
   //Every time: define color for each LED
   for(int i=0;i<NUMPIXELS;i++){
-    if(buildStatus[i] == 0) {
+    if(branchStatus[i] == 0) {
       value.r = 0; value.g = 0; value.b = 0;
-    }else if(buildStatus[i] == 1) {
+    }else if(branchStatus[i] == 1) {
       mul = 1.0f-(0.5f+0.5f*sin((((double)(millis()%1000))*3.1415926535f)/500.0f))*0.5; //pulse
       value.r = ((double)100) * mul; value.g = ((double)40) * mul; value.b = 0;
-    }else if(buildStatus[i] == 2) {
+    }else if(branchStatus[i] == 2) {
       mul = 1.0f-(0.5f+0.5f*sin((((double)(millis()%1000))*3.1415926535f)/500.0f))*0.5; //pulse
       value.r = ((double)100) * mul; value.g = ((double)10) * mul; value.b = 0;
-    }else if(buildStatus[i] == 3) {
+    }else if(branchStatus[i] == 3) {
       value.r = 0; value.g = 150; value.b = 0;
-    }else if(buildStatus[i] == 4) {
+    }else if(branchStatus[i] == 4) {
       value.r = 150; value.g = 0; value.b = 0;
     }
     LED.set_crgb_at(i, value);
     LED.sync();
   }
-  
   //if all request have been fired, stop client and return. request again if call interval has been reached
-  if(callIndex == 0 && writeBlocked && readBlocked && lastCall > 0 && millis() < lastCall + CALL_INTERVALL * 1000 ) {
+  if(buildIndex == 0 && writeBlocked && readBlocked && lastCall > 0 && millis() < lastCall + CALL_INTERVALL * 1000 ) {
     if(client.connected()) { //drop the client since the server does not keep the connection alive forever
       Serial.println("Disconnecting");
       client.stop(); 
+      connectAttempt = false;
     }
     return;
   }
   
   //connect to client, if disconnected
-  if(!client.connected()) {
+  if(readBlocked && !client.connected() && !connectAttempt) {
     Serial.println("Connecting");
-    client.connect(server, xxx); //ADD PORT
+    client = EthernetClient();
+    client.connect(server, port);
+    connectAttempt = true;
+    readBlocked = true;
+    writeBlocked = true;
   }
   
-  if(writeBlocked && readBlocked && client.connected()) {
+  if(writeBlocked && readBlocked) {
     writeBlocked = false;
   }
   
   //send request to server, if writing is allowed;
-  if(!writeBlocked){
-    if(callIndex == 0) {
-      running[buildIndex] = false; 
-      success[buildIndex] = true;
+  if(!writeBlocked && client.connected()){
+    connectAttempt = false;
+    
+    if(buildIndex == 0) {
+      //reset build status if requesting for the first branch
+      running[branchIndex] = false; 
+      success[branchIndex] = true;
     }  
     
-    if(callIndex == 0 && buildIndex == 0){
+    if(buildIndex == 0 && branchIndex == 0){
        lastCall = millis(); 
     }
     
     Serial.println("Requesting");
     
-    client.println("GET /httpAuth/app/rest/builds/?locator=buildType:"+builds[buildIndex][callIndex]+",running:any,start:0,count:1 HTTP/1.1");
-    client.println("Authorization:  basic  " + auth);
-    client.println("Host: "+xxx);//hostname
-//    client.println("Connection: close");
+    xml.reset();
+    xmlProcessing = false;
+    xmlBegin = false;
+    
+    client.println("GET /httpAuth/app/rest/builds/?locator=buildType:"+builds[branchIndex][buildIndex]+",running:any,start:0,count:1 HTTP/1.1");
+    client.println("Authorization: basic  " + auth);
+    client.println("Host: "+host);
     client.println();
+    client.println();
+    
+    lastCharMillis = millis();
     
     readBlocked = false;  
     writeBlocked = true;
   }  
-  
   //read one char if there's is one available, and process it with XML-parser
   if(!readBlocked && client.available()) {
     c = client.read();
+//    Serial.print(c);
     lastCharMillis = millis();
     if(xmlProcessing) {
       xml.processChar(c);
@@ -152,72 +183,72 @@ void loop() {
     }
     if (!xmlProcessing && c=='<') {
       xmlBegin = true;
+    }else{
+      xmlBegin = false;
     }
   }
   
-  //handle time outs
-  if(!readBlocked && client.connected() && lastCharMillis - millis() > 1000) {
-    readBlocked = true;
-    xmlProcessing = false;
-    xmlBegin = false;
-    Serial.println("timeout");
-    client.stop();
+  //handle timeouts
+  if(!readBlocked && client.connected() && millis() - lastCharMillis > 2000) {
+     Serial.println("Timeout");
+     readBlocked = true; 
   }
   
-  //read finished: determine build-status (will be used later for LEDs) and increment callIndex/buildIndex
+  //read finished: determine build-status (will be used later for LEDs) and increment buildIndex/branchIndex
   if(writeBlocked && readBlocked) {
-    if(++callIndex >= NUM_OF_BUILDS_PER_BRANCH) { //all builds of the branch have been read -> update status
-       callIndex = 0;
-       
-       if(success[buildIndex] && running[buildIndex]) {
-         buildStatus[buildIndex] == 1;
-       }else if(!success[buildIndex] && running[buildIndex]) {
-         buildStatus[buildIndex] == 2;
-       }else if(success[buildIndex] && !running[buildIndex]) {
-         buildStatus[buildIndex] == 3;
-       }else if(!success[buildIndex] && !running[buildIndex]) {
-         buildStatus[buildIndex] == 4;
+    if(++buildIndex >= NUM_OF_BUILDS_PER_BRANCH) { //all builds of the branch have been read -> update status
+
+             
+       //update status of current branch
+       if(success[branchIndex] && running[branchIndex]) {
+         branchStatus[branchIndex] = 1;
+       }else if(!success[branchIndex] && running[branchIndex]) {
+         branchStatus[branchIndex] = 2;
+       }else if(success[branchIndex] && !running[branchIndex]) {
+         branchStatus[branchIndex] = 3;
+       }else if(!success[branchIndex] && !running[branchIndex]) {
+         branchStatus[branchIndex] = 4;
        }   
        
-       Serial.println("Last complete build: "+buildStatus[buildIndex]);
+       Serial.print("Last complete build: ");
+       Serial.println(branchStatus[branchIndex]);
        
-       buildIndex = (buildIndex + 1) % sizeof(builds); //next build
+       buildIndex = 0; //reset buildIndex to zero, if all builds have been read
+       branchIndex = (branchIndex + 1) % NUM_OF_BRANCHES; //and continue with next branch
     }
   }
 }
 
 
 void XML_callback( uint8_t statusflags, char* tagName,  uint16_t tagNameLen,  char* data,  uint16_t dataLen ) {
+
   if (statusflags & STATUS_START_TAG) {
     //start tag
-    if(tagName == "builds") {
+    if(strcmp(tagName, "/builds") == 0) {
       Serial.print("Parse response...");
       buildTagIndex = -1;
-    }else if(tagName == "build"){
+    }else if(strcmp(tagName, "/builds/build") == 0){
       buildTagIndex++;
     }
   } else if  (statusflags & STATUS_END_TAG) {
     //end tag
-    if(tagName == "builds") {
+    if(strcmp(tagName, "/builds") == 0) {
       Serial.println("success");
-      readBlocked = true;
-      xmlProcessing = false;
-      xmlBegin = false;
+      readBlocked = true; //stop reading
     }
   } else if  (statusflags & STATUS_TAG_TEXT) {
     //end tag, nop
   } else if  (statusflags & STATUS_ATTR_TEXT) {
-    if(tagName == "status") {
-      success[buildIndex] &= (data == "SUCCESS");
-    }else if(tagName == "state") {
-      running[buildIndex] |= (data == "running");
+    if(strcmp(tagName, "status") == 0) {
+      success[branchIndex] &= (strcmp(data,"SUCCESS")==0);
+    }else if(strcmp(tagName, "state") == 0) {
+      running[branchIndex] |= (strcmp(data,"running")==0);
     }
   } else if  (statusflags & STATUS_ERROR) {
     Serial.println("failed");
-    readBlocked = true;
-    xmlProcessing = false;
-    xmlBegin = false;
+    readBlocked = true; //stop reading
   }
 }
+
 
 
