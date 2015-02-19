@@ -4,7 +4,7 @@ Collection of personal arduino sketches / projects
 
 ## Buildmonitor
 
-Show status of teamcity builds with RGB led.
+Shows the status of teamcity builds with RGB led.
 
 * Hardware: Arduino UNO, EthernetShield, WS2812-controlled RGB LEDs
 * Libraries: Ethernet, TinyXML, WS2812
