@@ -5,12 +5,20 @@
 #include <TinyXML.h>
 #include <WS2812.h>
 
-#define PIN                      6 //DATA pin of the WS2812 LED
+#define STATUS_SUCCESS_RUNNING   1
+#define STATUS_FAILED_RUNNING    2
+#define STATUS_SUCCESS_FINISHED  3
+#define STATUS_FAILED_FINISHED   4
+
+#define PIN_BUZZER               5 //DATA pin of the buzzer
+#define PIN_LIGHT                6 //DATA pin of the WS2812 LED
 #define NUMPIXELS                1 //Number of LED RGBs connected
 
 #define NUM_OF_BRANCHES          1 //Number of branches to show (should be the same as number of LEDs) (workaround: sizeof(builds) does not work properly)
 #define NUM_OF_BUILDS_PER_BRANCH 2 //Number of builds to watch per branch 
 #define CALL_INTERVALL           20 //Interval in seconds until the build status is requested again
+
+#define BUZZER_DURATION          400 //Duration of each buzzer tone (ms)
 
 String builds[NUM_OF_BRANCHES][NUM_OF_BUILDS_PER_BRANCH]  = { //collection of buildTypeIds for branches and their builds
     {//branch 0
@@ -48,8 +56,11 @@ boolean requestFinished = true;
 //some helper vars
 long lastCall;
 long lastCharMillis;
+long buzzerStart;
+long currentMillis;
 int buildIndex;
 int branchIndex;
+int prevBranchStatus;
 char c;
 boolean xmlProcessing;
 boolean xmlBegin;
@@ -59,7 +70,8 @@ boolean connectAttempt;
 
 void setup() {  
   
-  LED.setOutput(PIN); 
+  pinMode(PIN_BUZZER, OUTPUT);  
+  LED.setOutput(PIN_LIGHT); 
   
   Serial.begin(9600);
 
@@ -91,9 +103,16 @@ void setup() {
      success[i] = false;
      branchStatus[i] = 0;
   } 
+  
+  buzzer(false);
 }
 
 void loop() {
+  //Do some on/off buzzing if neccessary
+   buzzer(millis() - buzzerStart < BUZZER_DURATION || 
+    (millis() - buzzerStart >= BUZZER_DURATION * 2 && millis() - buzzerStart < BUZZER_DURATION * 3)  || 
+    (millis() - buzzerStart >= BUZZER_DURATION * 4 && millis() - buzzerStart < BUZZER_DURATION * 5));
+  
   //Every time: define color for each LED
   for(int i=0;i<NUMPIXELS;i++){
     if(branchStatus[i] == 0) {
@@ -198,17 +217,24 @@ void loop() {
   if(requestFinished && readFinished) {
     if(++buildIndex >= NUM_OF_BUILDS_PER_BRANCH) { //all builds of the branch have been read -> update status
 
+       prevBranchStatus = branchStatus[branchIndex];
              
        //update status of current branch
        if(success[branchIndex] && running[branchIndex]) {
-         branchStatus[branchIndex] = 1;
+         branchStatus[branchIndex] = STATUS_SUCCESS_RUNNING; 
        }else if(!success[branchIndex] && running[branchIndex]) {
-         branchStatus[branchIndex] = 2;
+         branchStatus[branchIndex] = STATUS_FAILED_RUNNING;
        }else if(success[branchIndex] && !running[branchIndex]) {
-         branchStatus[branchIndex] = 3;
+         branchStatus[branchIndex] = STATUS_SUCCESS_FINISHED;
        }else if(!success[branchIndex] && !running[branchIndex]) {
-         branchStatus[branchIndex] = 4;
+         branchStatus[branchIndex] = STATUS_FAILED_FINISHED;
        }   
+       
+       if((prevBranchStatus == STATUS_SUCCESS_RUNNING || prevBranchStatus == STATUS_SUCCESS_FINISHED) &&
+         (branchStatus[branchIndex] == STATUS_FAILED_RUNNING || branchStatus[branchIndex] == STATUS_FAILED_FINISHED)) {
+         //activate buzzer
+         buzzerStart = millis();
+       }
        
        Serial.print("Last complete build: ");
        Serial.println(branchStatus[branchIndex]);
@@ -248,6 +274,14 @@ void XML_callback( uint8_t statusflags, char* tagName,  uint16_t tagNameLen,  ch
     Serial.println("failed");
     readFinished = true; //stop reading
   }
+}
+
+void buzzer(boolean buzz) {
+   if(buzz) {
+     analogWrite(PIN_BUZZER,10);     
+   } else {
+     analogWrite(PIN_BUZZER,0);
+   }
 }
 
 
