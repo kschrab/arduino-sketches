@@ -42,6 +42,7 @@ byte nextByte;
 byte lightId;
 byte lightState;
 long buzzerStart;
+long lastConnectTry;
 double mul;
 int i,l;
 
@@ -60,21 +61,20 @@ void setup() {
   //init helper vars
   readIndex = 0;    
   client = EthernetClient();
+  lastConnectTry = 0;
+  buzzerStart = -1;
   
   for(int i=0;i<NUM_OF_BRANCHES;i++) {
      branchStatus[i] = 0;
   } 
-  
-  buzzer(false); //deactivate buzzer
-  
-  delay(1000); //wait some time to init
 }
 
 void loop() {
   //Do some on/off buzzing if neccessary
-   buzzer(millis() - buzzerStart < BUZZER_DURATION || 
+   buzzer(buzzerStart >= 0 && 
+    (millis() - buzzerStart < BUZZER_DURATION || 
     (millis() - buzzerStart >= BUZZER_DURATION * 2 && millis() - buzzerStart < BUZZER_DURATION * 3)  || 
-    (millis() - buzzerStart >= BUZZER_DURATION * 4 && millis() - buzzerStart < BUZZER_DURATION * 5));
+    (millis() - buzzerStart >= BUZZER_DURATION * 4 && millis() - buzzerStart < BUZZER_DURATION * 5)));
   
   //Every time: define color for each LED
   for(i=0;i<NUMPIXELS;i++){
@@ -100,9 +100,11 @@ void loop() {
   LED.sync();
   
   //if not connected, try to (re)connect
-  if(!client.connected()) {
+  if(!client.connected() && (lastConnectTry == 0 || millis() - lastConnectTry > 5000)) {
+    client = EthernetClient();
     client.connect(server, port);
-  }
+    lastConnectTry = millis();
+ }
   
   if(client.connected()) {
     while(client.available() > 0) {
@@ -132,6 +134,7 @@ void loop() {
       }
     }
   }
+  delay(10);
 }
 
 void buzzer(boolean buzz) {
